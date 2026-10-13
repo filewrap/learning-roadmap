@@ -1,0 +1,104 @@
+# Cybersecurity: Network and Traffic Analysis
+
+Network traffic analysis is the practice of observing and interpreting data moving between devices. A packet capture (often called a **PCAP**, after a common capture-file format) records packet-level evidence for later inspection. Analysts use this evidence to understand normal communication, troubleshoot failures, investigate suspicious events, and validate defensive controls. A packet is not automatically a complete message: protocols divide, combine, retransmit, or encrypt data at different layers.
+
+This chapter follows the supplied roadmap: Level 1 fundamentals (TCP/IP, UDP, DNS, HTTP, TLS, ICMP, ports, PCAP, Wireshark, filtering, and TCP streams); Level 2 topics (ARP, DHCP, DNS threats, HTTP internals, TLS analysis, reconstruction, custom protocols, VPNs, authentication, IPv6, and routing); and Level 3 (protocol reverse engineering, encrypted traffic analysis, fingerprinting, side channels, covert channels, DNS tunneling, exploitation, packet crafting, fuzzing, and custom-protocol exploitation). The advanced items are framed here as defensive concepts and safe lab study, not instructions for attacking systems.
+
+> **Safe-lab boundary:** Capture and inspect only traffic from your own devices and networks, intentionally vulnerable local labs, official practice environments, or systems for which you have explicit written authorization. Use synthetic or supplied PCAPs when possible. Do not probe public or third-party hosts, intercept others’ communications, collect credentials, or disrupt services.
+
+## Prerequisites and vocabulary
+
+You need only basic computer use and comfort with files and command-line concepts. Familiarity with binary/hexadecimal notation is useful but can be learned as needed. An IP address identifies a network interface in an addressing context; a **port** is a transport-layer number used to direct traffic to an application endpoint. A **protocol** is an agreed set of message rules. A **flow** is a useful analyst grouping of packets, commonly described by source/destination addresses, ports, protocol, and time.
+
+A **frame** is the link-layer unit visible on a local network; an **IP packet/datagram** carries network-layer information; a TCP **segment** or UDP **datagram** is a transport-layer unit. Captures often display all these layers together. A **payload** is the data carried beyond a given header. A **PCAP** file stores captured packets and metadata such as timestamps and link type. **Capture filters** restrict what is recorded; **display filters** hide or show packets in an existing capture. These are different operations: capture filtering can permanently omit evidence.
+
+## 1. Build the layered picture
+
+The familiar TCP/IP model groups communication into link, internet, transport, and application layers. The link layer moves frames on one local link; IP routes packets between networks; TCP or UDP provides transport between endpoints; application protocols define messages such as DNS or HTTP. The model is a way to reason, not a guarantee that every protocol neatly maps to one box. In an Ethernet capture, for example, Wireshark may decode Ethernet, then IPv4, then TCP, then TLS or HTTP. IPv4’s header includes source and destination addresses, a protocol identifier, and fragmentation fields; fragments may need reassembly to interpret the higher-layer payload [1].
+
+**TCP** is a connection-oriented byte stream: it numbers data so endpoints can acknowledge received ranges and retransmit lost data. Its initial three-way handshake is SYN, SYN-ACK, ACK; sequence and acknowledgment numbers describe stream position, not message numbers [2]. TCP does not preserve application message boundaries. One HTTP request may span multiple TCP segments, and a segment may contain pieces of more than one application message. **UDP** is connectionless at the transport layer and preserves datagram boundaries, but provides no TCP-style reliable delivery or ordering guarantee. Applications can build their own reliability above it.
+
+ICMP carries network control and diagnostic messages, such as indications that a destination is unreachable or a packet’s lifetime expired; it is not simply “ping traffic.” A port number is a convention and endpoint selector, not proof of which application is actually running. Tunnels, proxies, unusual configurations, and malicious software can all use unexpected port/protocol combinations. Read protocol evidence rather than treating a familiar port as conclusive.
+
+## 2. Understand common application traffic
+
+**DNS** translates names through queries and responses. A DNS message has a header and question, answer, authority, and additional sections. Resource records contain a name, type, class, time-to-live (TTL), and type-dependent data; an A record conventionally carries an IPv4 address, and a CNAME represents an alias [3]. Analysts compare query name/type with response code and records, and check whether the response corresponds to the query. Cached answers and resolver behavior mean a capture may not show every lookup. DNS can use transports beyond classic UDP, so a missing visible UDP query does not prove that no name resolution occurred. DNS over TLS (DoT) and DNS over HTTPS (DoH) encrypt the client-to-resolver exchange; DoH carries DNS messages as HTTPS exchanges, so an observer without authorized decryption generally cannot identify individual DNS questions from packet payloads [8, 9]. This is a visibility change, not proof that DNS activity stopped: correlate only permitted endpoint, resolver, and network telemetry, and account for encrypted DNS configured by applications independently of the operating system. DNSSEC and encrypted DNS solve different problems: DNSSEC can authenticate signed DNS data, while transport encryption protects the client-resolver channel; neither implies the other [9].
+
+**HTTP** is an application protocol for requests and responses. A request conveys a method and target; a response has a status code and metadata. HTTP semantics are shared across versions, but their wire encodings differ; HTTP/2 and HTTP/3 do not appear as plain HTTP/1.1 text lines [4]. Plain HTTP traffic, when actually unencrypted and visible in the capture, may expose headers and content. Do not assume that seeing TCP port 80 establishes that the payload is HTTP.
+
+**TLS** protects application communication using a handshake to negotiate parameters and establish keys, then a record layer that protects application data. TLS 1.3 specifies authenticated encryption for application data after handshake completion [5]. A passive observer can often reason about endpoints, timing, sizes, and some handshake metadata, but normally cannot read protected application content from a capture alone. TLS visibility depends on protocol version, extensions, where capture occurs, and whether authorized decryption material is available. Never seek or collect other people’s keys or credentials. HTTP/3 uses QUIC, a secure transport carried in UDP datagrams; therefore, a UDP flow that is not ordinary DNS is not automatically suspicious, and TCP-only inspection misses this transport [10]. QUIC protects most post-handshake packet contents, although some connection metadata and traffic patterns may remain observable; do not infer application content from a port or packet size alone [10]. A VPN similarly creates a protected tunnel: an observer on the outside may see the tunnel endpoints and traffic patterns while inner traffic is concealed, subject to tunnel configuration and observation point.
+
+## 3. Capture and inspect with care
+
+A packet analyzer such as Wireshark decodes packet structures and supports filtering and stream-oriented inspection [6]. Begin with an already-provided training capture, or capture a short, permitted session on your own machine. Record context: capture interface, start/end time, expected activity, and known limits. A capture only shows traffic visible at that point; switching, Wi-Fi encryption, VPNs, host firewalls, packet loss, and capture drops can all affect what is present. Before interpreting absence, establish the sensor vantage point (host, access point, switch mirror, or gateway), link type, direction, time basis, and whether the capture reports dropped packets. Host captures may show checksum or segmentation artifacts caused by offload: an apparent bad checksum or oversized segment can be an artifact of where capture occurred, not necessarily a malformed packet on the wire. Preserve the original capture and record tool/version, interface, filter, clock/time zone, and known collection limitations; analyze a working copy when possible.
+
+First inspect packet list columns: time, source, destination, protocol, length, and summary. Then select a packet and expand its layers, comparing field values against the decoded bytes when something matters. Ask a narrow question: Which endpoints communicate? What starts the flow? Is there a successful TCP handshake? Does DNS resolve before the connection? Is the exchange encrypted? What evidence supports that conclusion? Avoid beginning with a giant filter that hides context.
+
+Filters are a central skill. A **capture filter** uses a capture-time filtering language and decides what enters the file; a **display filter** uses Wireshark’s protocol-field syntax to select packets already recorded. For example, a display filter such as `dns` narrows an existing capture to decoded DNS packets; `tcp` shows decoded TCP. Field names and syntax are tool-specific and evolve, so verify against the maintained Wireshark display-filter reference and the installed tool’s help [6]. If a filter returns nothing, remove it and inspect the packet list before concluding that the traffic is absent. Build filters incrementally—first protocol, then endpoint, then a field/value—and verify the filter syntax against the installed version. A display filter tests decoded fields and can omit packets that were not dissected as expected; a capture filter is applied before recording and can discard packets permanently. Keep an unfiltered original when feasible, especially for incident evidence [6].
+
+Use **Follow TCP Stream** to view the reconstructed byte stream for a selected connection where the data is available and decodable. Stream reconstruction can clarify ordering across segments, but it cannot decrypt TLS simply by joining packets. Retransmissions, missing capture packets, or out-of-order arrival may affect what an analyst sees; TCP analysis indicators are clues to investigate, not automatic proof of a network fault or attack [2, 6].
+
+## 4. From observation to defensible interpretation
+
+A good analyst distinguishes **observation**, **interpretation**, and **confidence**. Observation: “The capture contains repeated DNS queries for the same name with no visible answer.” Interpretation: “The client may not be receiving a response.” Alternatives include capture loss, a different resolver path, encryption, or a response outside the capture interval. Confidence should reflect those possibilities.
+
+For a short connection, reconstruct the sequence: name lookup (if visible), transport setup, application handshake, data exchange, and close/reset. Correlate timestamps and endpoints. Note that NAT or proxies can rewrite addresses or split one logical conversation into multiple network flows. A TCP SYN with no observed reply is not enough to prove a remote host is down: the reply may be filtered, routed elsewhere, or simply outside the sensor’s view. For each conclusion, separate packet-level facts from inferred cause and name at least one alternative. For example, repeated SYN retransmissions with no SYN-ACK support “no reply observed at this sensor during this interval”; they do not distinguish a silent firewall, route failure, unavailable service, capture loss, or asymmetric return path. Corroborate with authorized endpoint/service logs or a second sensor before escalating.
+
+Defensive detection combines protocol-aware rules and behavior baselines. A network intrusion detection system (NIDS) observes network traffic to identify suspicious activity; its value depends on placement, coverage, rules, tuning, and response process. NIST’s IDPS guide discusses network-based and other detection/prevention classes, while noting the operational need to design, configure, monitor, and maintain them [7]. Alerts are leads, not verdicts: validate with packet evidence, endpoint logs, asset context, and benign explanations. The guide is useful foundational context, but its publication itself notes it dates from 2007 and that a proposed revision remained a retired draft; do not treat every product-specific recommendation as current practice [7].
+
+## 5. Level 2: local networks, routing, and reconstruction
+
+**ARP** maps an IPv4 address to a link-layer address on a local network. It is local-link discovery, not internet-wide routing. **DHCP** leases configuration such as an address, gateway, and DNS resolver; a typical acquisition exchange can be recognized by its discover/offer/request/acknowledge pattern, though relays and existing leases change what is visible. Anomalies merit context: unexpected responders or address changes may indicate misconfiguration or abuse, but require confirmation from authorized network records.
+
+**Routing** is the selection of a next hop for packets; the route visible on one host may differ from the path taken after gateways, tunnels, or policy controls. IPv6 uses a different IP header and address format from IPv4, with extension headers and neighbor discovery concepts that require IPv6-aware decoding. Do not treat IPv4-only filters or assumptions as comprehensive coverage.
+
+Protocol reconstruction means reassembling transport streams or application transactions and interpreting message framing. For custom protocols, start by documenting repeated byte patterns, lengths, field positions, and state transitions across benign sample exchanges. Make hypotheses, test them against multiple examples, and record uncertainty. Network authentication may involve challenge-response exchanges or tokens; a capture can expose metadata without exposing the secret itself. Never attempt to recover or reuse another person’s credentials.
+
+DNS abuse, including tunneling, is best approached as a detection problem: unusually long or high-volume names, atypical record types, repeated failures, or patterns inconsistent with a host’s role can be signals, but legitimate software can generate unusual DNS too. Treat these as leads rather than signatures: compare a host with its own baseline and peer systems, normalize for legitimate update/monitoring software, and validate over an appropriate time window. Encrypted DoT/DoH can remove query names from a network-only view, so monitoring design should state which resolver paths and telemetry sources are in scope rather than claiming complete DNS visibility [8, 9]. TLS analysis and encrypted-traffic analysis similarly focus on observable metadata and context rather than claiming to read ciphertext. Traffic fingerprinting groups or identifies traffic from features such as timing, size, or handshake characteristics; side-channel analysis studies information indirectly revealed by such observables. These signals can be noisy and change with software, networks, and protocol updates.
+
+## 6. Level 3: advanced study, safely framed
+
+Protocol reverse engineering studies an undocumented format by comparing controlled examples and building a testable model. Covert channels encode information in an unexpected protocol field or traffic pattern; DNS tunneling is one possible abuse of DNS query/response behavior. Defenders study these concepts to identify and limit misuse, not to build or deploy hidden communication. Packet crafting and protocol fuzzing are legitimate testing techniques only within a local isolated lab, an official practice environment, or a written-authorized assessment. Fuzzing sends structured variations to find robustness problems; use a disposable target, controlled rate, snapshots, and no routable third-party destination. Network exploitation and custom-protocol exploitation are out of scope for operational instruction here; study them only under a formal lab syllabus with explicit rules and supervision.
+
+## Practice: small exercises with checks
+
+1. **Layer walk:** Open a supplied benign PCAP and select one DNS query. Identify link, IP, transport, and DNS fields. **Success check:** You can name source/destination at each visible layer and distinguish the DNS question from any answer record.
+2. **TCP lifecycle:** Find a complete TCP handshake and follow the stream. **Success check:** Label SYN, SYN-ACK, ACK in order and explain that sequence numbers count stream bytes/control positions, not HTTP messages [2].
+3. **Filter safely:** Apply display filter `dns`, then clear it and compare packet counts; do not alter the capture file. **Success check:** Explain that display filtering changes what is shown, not what was originally recorded [6].
+4. **Encrypted versus visible:** Compare a provided plain HTTP training exchange with a TLS exchange. **Success check:** Identify the request/response content only in the unencrypted case and describe which metadata remains observable in the TLS case without claiming ciphertext was decoded [4, 5].
+5. **Capture-vantage check:** For a supplied capture, note where it was collected and identify one class of traffic it could miss (for example, another switched port, a VPN inner flow, or encrypted DNS). **Success check:** You do not treat absence in the file as absence on the network.
+6. **Evidence note:** Write three lines for a suspicious-looking flow: observation, possible explanation, and what additional authorized evidence would test it. **Success check:** Your observation is directly supported by packets, your interpretation includes at least one benign alternative, and the next evidence source is permitted and relevant.
+7. **Encrypted DNS/QUIC comparison:** In a supplied benign trace, compare visible classic DNS with an encrypted resolver exchange or QUIC flow if present. **Success check:** Explain which protocol/endpoint/timing clues are visible and which query or application details cannot be established from encrypted payloads alone [8, 10].
+
+## Common mistakes
+
+- Treating packet boundaries as application-message boundaries; TCP is a byte stream.
+- Assuming a port number proves the application or that an absent packet proves an event did not happen.
+- Confusing capture filters with display filters, or filtering away context before saving evidence.
+- Calling a retransmission, unusual DNS name, or failed handshake malicious without checking capture quality and context.
+- Assuming TLS hides all metadata or, conversely, that a packet analyzer can reveal protected contents without legitimate keys.
+- Treating a single sensor’s view as the whole network, or treating IDS alerts as confirmed incidents.
+- Forgetting evidence handling: preserve original captures, note time/interface/context, and avoid sharing sensitive packet contents.
+
+## A concise next-step sequence
+
+1. Learn IP addressing, ports, DNS, TCP/UDP, and the difference between packets and streams.
+2. Inspect supplied PCAPs in Wireshark; practice packet dissection, display filters, and TCP stream reconstruction.
+3. Study HTTP and TLS behavior, explicitly separating visible metadata from encrypted content.
+4. Add ARP, DHCP, IPv6, routing, and VPN observation using authorized local examples.
+5. Practice evidence-based detection and protocol reconstruction with synthetic or official lab captures.
+6. Learn encrypted DNS and QUIC visibility limits before interpreting missing DNS or UDP-based application traffic.
+7. Only then explore fingerprinting, covert-channel detection, fuzzing, and exploitation concepts inside isolated, expressly permitted labs.
+
+## References
+
+[1]: https://www.rfc-editor.org/rfc/rfc791.html "Internet Protocol"
+[2]: https://www.rfc-editor.org/rfc/rfc9293.html "Transmission Control Protocol (TCP)"
+[3]: https://www.rfc-editor.org/rfc/rfc1035.html "Domain Names - Implementation and Specification"
+[4]: https://www.rfc-editor.org/rfc/rfc9110.html "HTTP Semantics"
+[5]: https://www.rfc-editor.org/rfc/rfc8446.html "The Transport Layer Security (TLS) Protocol Version 1.3"
+[6]: https://www.wireshark.org/docs/wsug_html_chunked/ "Wireshark User’s Guide"
+[7]: https://csrc.nist.gov/pubs/sp/800/94/final "Guide to Intrusion Detection and Prevention Systems (IDPS)"
+[8]: https://datatracker.ietf.org/doc/html/rfc8484 "DNS Queries over HTTPS (DoH)"
+[9]: https://www.rfc-editor.org/info/rfc7858/ "Specification for DNS over Transport Layer Security (TLS)"
+[10]: https://www.rfc-editor.org/info/rfc9000/ "QUIC: A UDP-Based Multiplexed and Secure Transport"
